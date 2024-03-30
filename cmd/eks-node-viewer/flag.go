@@ -41,6 +41,7 @@ func init() {
 }
 
 type Flags struct {
+	NRAppName       string
 	Context         string
 	NodeSelector    string
 	ExtraLabels     string
@@ -48,11 +49,12 @@ type Flags struct {
 	Style           string
 	Kubeconfig      string
 	Resources       string
-	OTelEndpoint    string
+	NRHostName      string
+	NRLicenseKey    string
 	DisablePricing  bool
 	ShowAttribution bool
 	Version         bool
-	OTelMode        bool
+	NRMode          bool
 }
 
 func ParseFlags() (Flags, error) {
@@ -94,9 +96,11 @@ func ParseFlags() (Flags, error) {
 
 	flagSet.BoolVar(&flags.ShowAttribution, "attribution", false, "Show the Open Source Attribution")
 
-	flagSet.BoolVar(&flags.OTelMode, "otel-mode", getBoolEnv("OTEL_MODE", false), "Collect metrics and emit once to OTel listener")
+	flagSet.BoolVar(&flags.NRMode, "nr-mode", getBoolEnv("NR_MODE", false), "Enabling emitting events to New Relic")
+	flagSet.StringVar(&flags.NRHostName, "nr-host-name", getStringEnv("NEW_RELIC_HOST", ""), "New Relic Hostname")
+	flagSet.StringVar(&flags.NRAppName, "nr-app-name", getStringEnv("NEW_RELIC_APP_NAME", ""), "New Relic Application Name")
+	flagSet.StringVar(&flags.NRLicenseKey, "nr-license-key", getStringEnv("NEW_RELIC_LICENSE_KEY", ""), "License Key for emitting events to New Relic")
 
-	flagSet.StringVar(&flags.OTelEndpoint, "otel-endpoint", getStringEnv("OTEL_ENDPOINT", ""), "OTeL backend endpoint for receiving metrics, default: <auto-discovered via kubernetes Downward API>")
 	if err := flagSet.Parse(os.Args[1:]); err != nil {
 		return Flags{}, err
 	}

@@ -10,6 +10,9 @@ require (
 	github.com/charmbracelet/bubbletea v0.24.2
 	github.com/charmbracelet/lipgloss v0.9.1
 	github.com/facette/natsort v0.0.0-20181210072756-2cd4dd1e2dcb
+	github.com/newrelic/go-agent/v3 v3.31.0
+	github.com/newrelic/go-agent/v3/integrations/nrlogrus v1.0.1
+	github.com/sirupsen/logrus v1.9.3
 	go.uber.org/multierr v1.11.0
 	golang.org/x/text v0.14.0
 	k8s.io/api v0.29.1
@@ -54,7 +57,7 @@ require (
 	github.com/rivo/uniseg v0.2.0 // indirect
 	github.com/samber/lo v1.39.0 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
-	golang.org/x/exp v0.0.0-20220722155223-a9213eeb770e // indirect
+	golang.org/x/exp v0.0.0-20240318143956-a85f2c67cd81 // indirect
 	golang.org/x/net v0.22.0 // indirect
 	golang.org/x/oauth2 v0.16.0 // indirect
 	golang.org/x/sync v0.6.0 // indirect
@@ -62,6 +65,8 @@ require (
 	golang.org/x/term v0.18.0 // indirect
 	golang.org/x/time v0.5.0 // indirect
 	google.golang.org/appengine v1.6.8 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20230525234030-28d5490b6b19 // indirect
+	google.golang.org/grpc v1.56.3 // indirect
 	google.golang.org/protobuf v1.33.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
