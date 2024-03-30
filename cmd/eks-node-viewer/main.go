@@ -80,6 +80,16 @@ func main() {
 
 	defaults.SharedCredentialsFilename()
 	pprov := pricing.NewStaticProvider()
+
+	if flags.OTelMode {
+		startOTel(flags, pprov, ctx, cs, nodeClaimClient, cancel)
+	} else {
+		startUI(flags, pprov, ctx, cs, nodeClaimClient, cancel)
+	}
+
+}
+
+func startUI(flags Flags, pprov *pricing.Provider, ctx context.Context, cs *kubernetes.Clientset, nodeClaimClient *rest.RESTClient, cancel context.CancelFunc) {
 	style, err := model.ParseStyle(flags.Style)
 	if err != nil {
 		log.Fatalf("creating style, %s", err)
@@ -104,21 +114,65 @@ func main() {
 		nodeSelector = ns
 	}
 
-	monitorSettings := &monitorSettings{
+	monitorSettings := &monitorSettingsUI{
 		clientset:       cs,
 		nodeClaimClient: nodeClaimClient,
 		model:           m,
 		nodeSelector:    nodeSelector,
 		pricing:         pprov,
 	}
-	startMonitor(ctx, monitorSettings)
+	startMonitorUI(ctx, monitorSettings)
 	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
 		log.Fatalf("error running tea: %s", err)
 	}
 	cancel()
 }
 
-type monitorSettings struct {
+func startOTel(flags Flags, pprov *pricing.Provider, ctx context.Context, cs *kubernetes.Clientset, nodeClaimClient *rest.RESTClient, cancel context.CancelFunc) {
+	m := model.NewOTelModel(strings.Split(flags.ExtraLabels, ","))
+	m.SetResources(strings.FieldsFunc(flags.Resources, func(r rune) bool { return r == ',' }))
+
+	if !flags.DisablePricing {
+		sess := session.Must(session.NewSessionWithOptions(session.Options{SharedConfigState: session.SharedConfigEnable}))
+		updateAllPrices := func() {
+			m.Cluster().ForEachNode(func(n *model.Node) {
+				n.UpdatePrice(pprov)
+			})
+		}
+		pprov = pricing.NewProvider(ctx, sess, updateAllPrices)
+	}
+
+	var nodeSelector labels.Selector
+	if ns, err := labels.Parse(flags.NodeSelector); err != nil {
+		log.Fatalf("parsing node selector: %s", err)
+	} else {
+		nodeSelector = ns
+	}
+
+	monitorSettings := &monitorSettingsOTel{
+		clientset:       cs,
+		nodeClaimClient: nodeClaimClient,
+		model:           m,
+		nodeSelector:    nodeSelector,
+		pricing:         pprov,
+	}
+	startMonitorOTel(ctx, monitorSettings)
+	for true {
+		m.Run()
+		time.Sleep(5 * time.Second)
+	}
+	cancel()
+}
+
+type monitorSettingsOTel struct {
+	clientset       *kubernetes.Clientset
+	nodeClaimClient *rest.RESTClient
+	model           *model.OTelModel
+	nodeSelector    labels.Selector
+	pricing         *pricing.Provider
+}
+
+type monitorSettingsUI struct {
 	clientset       *kubernetes.Clientset
 	nodeClaimClient *rest.RESTClient
 	model           *model.UIModel
@@ -126,7 +180,133 @@ type monitorSettings struct {
 	pricing         *pricing.Provider
 }
 
-func startMonitor(ctx context.Context, settings *monitorSettings) {
+func startMonitorOTel(ctx context.Context, settings *monitorSettingsOTel) {
+	podWatchList := cache.NewListWatchFromClient(settings.clientset.CoreV1().RESTClient(), "pods",
+		v1.NamespaceAll, fields.Everything())
+
+	cluster := settings.model.Cluster()
+	_, podController := cache.NewInformer(
+		podWatchList,
+		&v1.Pod{},
+		time.Second*0,
+		cache.ResourceEventHandlerFuncs{
+			AddFunc: func(obj interface{}) {
+				p := obj.(*v1.Pod)
+				if !isTerminalPod(p) {
+					cluster.AddPod(model.NewPod(p))
+					node, ok := cluster.GetNodeByName(p.Spec.NodeName)
+					// need to potentially update node price as we need the fargate pod in order to figure out the cost
+					if ok && node.IsFargate() && !node.HasPrice() {
+						node.UpdatePrice(settings.pricing)
+					}
+				}
+			},
+			DeleteFunc: func(obj interface{}) {
+				p := obj.(*v1.Pod)
+				cluster.DeletePod(p.Namespace, p.Name)
+			},
+			UpdateFunc: func(oldObj, newObj interface{}) {
+				p := newObj.(*v1.Pod)
+				if isTerminalPod(p) {
+					cluster.DeletePod(p.Namespace, p.Name)
+				} else {
+					pod, ok := cluster.GetPod(p.Namespace, p.Name)
+					if !ok {
+						cluster.AddPod(model.NewPod(p))
+					} else {
+						pod.Update(p)
+						cluster.AddPod(pod)
+					}
+				}
+			},
+		},
+	)
+	go podController.Run(ctx.Done())
+
+	nodeWatchList := cache.NewFilteredListWatchFromClient(settings.clientset.CoreV1().RESTClient(), "nodes",
+		v1.NamespaceAll, func(options *metav1.ListOptions) {
+			options.LabelSelector = settings.nodeSelector.String()
+		})
+	_, nodeController := cache.NewInformer(
+		nodeWatchList,
+		&v1.Node{},
+		time.Second*0,
+		cache.ResourceEventHandlerFuncs{
+			AddFunc: func(obj interface{}) {
+				node := model.NewNode(obj.(*v1.Node))
+				node.UpdatePrice(settings.pricing)
+				n := cluster.AddNode(node)
+				n.Show()
+			},
+			DeleteFunc: func(obj interface{}) {
+				cluster.DeleteNode(obj.(*v1.Node).Spec.ProviderID)
+			},
+			UpdateFunc: func(oldObj, newObj interface{}) {
+				n := newObj.(*v1.Node)
+				if !n.DeletionTimestamp.IsZero() && len(n.Finalizers) == 0 {
+					cluster.DeleteNode(n.Spec.ProviderID)
+				} else {
+					node, ok := cluster.GetNode(n.Spec.ProviderID)
+					if !ok {
+						log.Println("unable to find node", n.Name)
+					} else {
+						node.Update(n)
+						node.UpdatePrice(settings.pricing)
+					}
+					node.Show()
+				}
+			},
+		},
+	)
+	go nodeController.Run(ctx.Done())
+
+	// If a NodeClaims Get returns an error, then don't startup the nodeclaims controller since the CRD is not registered
+	if err := settings.nodeClaimClient.Get().Do(ctx).Error(); err == nil {
+		nodeClaimWatchList := cache.NewFilteredListWatchFromClient(settings.nodeClaimClient, "nodeclaims",
+			v1.NamespaceAll, func(options *metav1.ListOptions) {
+				options.LabelSelector = settings.nodeSelector.String()
+			})
+		_, nodeClaimController := cache.NewInformer(
+			nodeClaimWatchList,
+			&v1beta1.NodeClaim{},
+			time.Second*0,
+			cache.ResourceEventHandlerFuncs{
+				AddFunc: func(obj interface{}) {
+					nc := obj.(*v1beta1.NodeClaim)
+					if nc.Status.ProviderID == "" {
+						return
+					}
+					if _, ok := cluster.GetNode(nc.Status.ProviderID); ok {
+						return
+					}
+					node := model.NewNodeFromNodeClaim(nc)
+					node.UpdatePrice(settings.pricing)
+					n := cluster.AddNode(node)
+					n.Show()
+				},
+				DeleteFunc: func(obj interface{}) {
+					cluster.DeleteNode(obj.(*v1beta1.NodeClaim).Status.ProviderID)
+				},
+				UpdateFunc: func(oldObj, newObj interface{}) {
+					nc := newObj.(*v1beta1.NodeClaim)
+					if nc.Status.ProviderID == "" {
+						return
+					}
+					if _, ok := cluster.GetNode(nc.Status.ProviderID); ok {
+						return
+					}
+					node := model.NewNodeFromNodeClaim(nc)
+					node.UpdatePrice(settings.pricing)
+					n := cluster.AddNode(node)
+					n.Show()
+				},
+			},
+		)
+		go nodeClaimController.Run(ctx.Done())
+	}
+}
+
+func startMonitorUI(ctx context.Context, settings *monitorSettingsUI) {
 	podWatchList := cache.NewListWatchFromClient(settings.clientset.CoreV1().RESTClient(), "pods",
 		v1.NamespaceAll, fields.Everything())
 

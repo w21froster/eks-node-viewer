@@ -48,9 +48,11 @@ type Flags struct {
 	Style           string
 	Kubeconfig      string
 	Resources       string
+	OTelEndpoint    string
 	DisablePricing  bool
 	ShowAttribution bool
 	Version         bool
+	OTelMode        bool
 }
 
 func ParseFlags() (Flags, error) {
@@ -92,6 +94,9 @@ func ParseFlags() (Flags, error) {
 
 	flagSet.BoolVar(&flags.ShowAttribution, "attribution", false, "Show the Open Source Attribution")
 
+	flagSet.BoolVar(&flags.OTelMode, "otel-mode", getBoolEnv("OTEL_MODE", false), "Collect metrics and emit once to OTel listener")
+
+	flagSet.StringVar(&flags.OTelEndpoint, "otel-endpoint", getStringEnv("OTEL_ENDPOINT", ""), "OTeL backend endpoint for receiving metrics, default: <auto-discovered via kubernetes Downward API>")
 	if err := flagSet.Parse(os.Args[1:]); err != nil {
 		return Flags{}, err
 	}
@@ -106,6 +111,18 @@ func getStringEnv(envName string, defaultValue string) string {
 		return defaultValue
 	}
 	return env
+}
+
+func getBoolEnv(envName string, defaultValue bool) bool {
+	env, ok := os.LookupEnv(envName)
+	if !ok {
+		return defaultValue
+	}
+	envBoolValue, err := strconv.ParseBool(env)
+	if err != nil {
+		panic("Env Var " + envName + " must be either true or false")
+	}
+	return envBoolValue
 }
 
 // --- config file ---

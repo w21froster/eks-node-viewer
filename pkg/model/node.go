@@ -296,11 +296,7 @@ func (n *Node) UpdatePrice(pricing *pricing.Provider) {
 	}
 	// lookup our n price
 	n.Price = math.NaN()
-	if n.IsOnDemand() {
-		if price, ok := pricing.OnDemandPrice(n.InstanceType()); ok {
-			n.Price = price
-		}
-	} else if n.IsSpot() {
+	if n.IsSpot() {
 		if price, ok := pricing.SpotPrice(n.InstanceType(), n.Zone()); ok {
 			n.Price = price
 		}
@@ -310,6 +306,11 @@ func (n *Node) UpdatePrice(pricing *pricing.Provider) {
 			if price, ok := pricing.FargatePrice(cpu, mem); ok {
 				n.Price = price
 			}
+		}
+	} else {
+		// Assume on-demand pricing
+		if price, ok := pricing.OnDemandPrice(n.InstanceType()); ok {
+			n.Price = price
 		}
 	}
 }
